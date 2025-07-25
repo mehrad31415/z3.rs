@@ -1,12 +1,14 @@
 //! Abstract syntax tree (AST).
 
 use log::debug;
+use num::pow::Pow;
 use std::borrow::Borrow;
 use std::cmp::{Eq, PartialEq};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::ops::{Add, Div, Mul, Sub};
 
 pub use z3_sys::AstKind;
 use z3_sys::*;
@@ -856,6 +858,62 @@ impl<'ctx> Int<'ctx> {
         }
     }
 
+    pub fn from_i128(ctx: &'ctx Context, v: i128) -> Int<'ctx> {
+        let int_sort = Sort::int(ctx);
+        let s = v.to_string();
+        let c_str = CString::new(s).unwrap();
+        unsafe {
+            Self::wrap(
+                ctx,
+                Z3_mk_numeral(ctx.z3_ctx, c_str.as_ptr(), int_sort.z3_sort),
+            )
+        }
+    }
+
+    pub fn from_u128(ctx: &'ctx Context, v: u128) -> Int<'ctx> {
+        let int_sort = Sort::int(ctx);
+        let s = v.to_string();
+        let c_str = CString::new(s).unwrap();
+        unsafe {
+            Self::wrap(
+                ctx,
+                Z3_mk_numeral(ctx.z3_ctx, c_str.as_ptr(), int_sort.z3_sort),
+            )
+        }
+    }
+
+    pub fn as_i128(&self) -> Option<i128> {
+        if !unsafe { Z3_is_numeral_ast(self.get_ctx().z3_ctx, self.get_z3_ast()) } {
+            return None;
+        }
+
+        let c_str = unsafe {
+            std::ffi::CStr::from_ptr(Z3_get_numeral_string(
+                self.get_ctx().z3_ctx,
+                self.get_z3_ast(),
+            ))
+        };
+
+        let s = c_str.to_string_lossy();
+        s.parse::<i128>().ok()
+    }
+
+    pub fn as_u128(&self) -> Option<u128> {
+        if !unsafe { Z3_is_numeral_ast(self.get_ctx().z3_ctx, self.get_z3_ast()) } {
+            return None;
+        }
+
+        let c_str = unsafe {
+            std::ffi::CStr::from_ptr(Z3_get_numeral_string(
+                self.get_ctx().z3_ctx,
+                self.get_z3_ast(),
+            ))
+        };
+
+        let s = c_str.to_string_lossy();
+        s.parse::<u128>().ok()
+    }
+
     pub fn from_real(ast: &Real<'ctx>) -> Int<'ctx> {
         unsafe { Self::wrap(ast.ctx, Z3_mk_real2int(ast.ctx.z3_ctx, ast.z3_ast)) }
     }
@@ -921,20 +979,111 @@ impl<'ctx> Int<'ctx> {
         gt(Z3_mk_gt, Bool<'ctx>);
         ge(Z3_mk_ge, Bool<'ctx>);
     }
-    // Z3 does support mixing ints and reals in add(), sub(), mul(), div(), and power()
-    //   (but not rem(), modulo(), lt(), le(), gt(), or ge()).
-    // TODO: we could consider expressing this by having a Numeric trait with these methods.
-    //    Int and Real would have the Numeric trait, but not the other Asts.
-    // For example:
-    //   fn add(&self, other: &impl Numeric<'ctx>) -> Dynamic<'ctx> { ... }
-    // Note the return type would have to be Dynamic I think (?), as the exact result type
-    //   depends on the particular types of the inputs.
-    // Alternately, we could just have
-    //   Int::add_real(&self, other: &Real<'ctx>) -> Real<'ctx>
-    // and
-    //   Real::add_int(&self, other: &Int<'ctx>) -> Real<'ctx>
-    // This might be cleaner because we know exactly what the output type will be for these methods.
 }
+
+// Z3 does support mixing ints and reals in add(), sub(), mul(), div(), and power()
+fn add_int_real<'ctx>(i: &Int<'ctx>, r: &Real<'ctx>) -> Real<'ctx> {
+    unsafe {
+        let args = [i.z3_ast, r.z3_ast];
+        Real::wrap(i.ctx, Z3_mk_add(i.ctx.z3_ctx, 2, args.as_ptr()))
+    }
+}
+fn add_real_int<'ctx>(r: &Real<'ctx>, i: &Int<'ctx>) -> Real<'ctx> {
+    unsafe {
+        let args = [r.z3_ast, i.z3_ast];
+        Real::wrap(r.ctx, Z3_mk_add(r.ctx.z3_ctx, 2, args.as_ptr()))
+    }
+}
+
+fn sub_int_real<'ctx>(i: &Int<'ctx>, r: &Real<'ctx>) -> Real<'ctx> {
+    unsafe {
+        let args = [i.z3_ast, r.z3_ast];
+        Real::wrap(i.ctx, Z3_mk_sub(i.ctx.z3_ctx, 2, args.as_ptr()))
+    }
+}
+fn sub_real_int<'ctx>(r: &Real<'ctx>, i: &Int<'ctx>) -> Real<'ctx> {
+    unsafe {
+        let args = [r.z3_ast, i.z3_ast];
+        Real::wrap(r.ctx, Z3_mk_sub(r.ctx.z3_ctx, 2, args.as_ptr()))
+    }
+}
+
+fn mul_int_real<'ctx>(i: &Int<'ctx>, r: &Real<'ctx>) -> Real<'ctx> {
+    unsafe {
+        let args = [i.z3_ast, r.z3_ast];
+        Real::wrap(i.ctx, Z3_mk_mul(i.ctx.z3_ctx, 2, args.as_ptr()))
+    }
+}
+fn mul_real_int<'ctx>(r: &Real<'ctx>, i: &Int<'ctx>) -> Real<'ctx> {
+    unsafe {
+        let args = [r.z3_ast, i.z3_ast];
+        Real::wrap(r.ctx, Z3_mk_mul(r.ctx.z3_ctx, 2, args.as_ptr()))
+    }
+}
+
+fn div_int_real<'ctx>(i: &Int<'ctx>, r: &Real<'ctx>) -> Real<'ctx> {
+    unsafe { Real::wrap(i.ctx, Z3_mk_div(i.ctx.z3_ctx, i.z3_ast, r.z3_ast)) }
+}
+fn div_real_int<'ctx>(r: &Real<'ctx>, i: &Int<'ctx>) -> Real<'ctx> {
+    unsafe { Real::wrap(r.ctx, Z3_mk_div(r.ctx.z3_ctx, r.z3_ast, i.z3_ast)) }
+}
+
+fn pow_int_real<'ctx>(i: &Int<'ctx>, r: &Real<'ctx>) -> Real<'ctx> {
+    unsafe { Real::wrap(i.ctx, Z3_mk_power(i.ctx.z3_ctx, i.z3_ast, r.z3_ast)) }
+}
+fn pow_real_int<'ctx>(r: &Real<'ctx>, i: &Int<'ctx>) -> Real<'ctx> {
+    unsafe { Real::wrap(r.ctx, Z3_mk_power(r.ctx.z3_ctx, r.z3_ast, i.z3_ast)) }
+}
+
+// Generic macro to implement the four ownership combinations
+macro_rules! impl_mixed_binop {
+    ($Trait:ident, $method:ident, $L:ident, $R:ident, $builder:ident) => {
+        impl<'ctx> $Trait<&$R<'ctx>> for &$L<'ctx> {
+            type Output = Real<'ctx>;
+            fn $method(self, rhs: &$R<'ctx>) -> Real<'ctx> {
+                $builder(self, rhs)
+            }
+        }
+        impl<'ctx> $Trait<$R<'ctx>> for &$L<'ctx> {
+            type Output = Real<'ctx>;
+            fn $method(self, rhs: $R<'ctx>) -> Real<'ctx> {
+                $builder(self, &rhs)
+            }
+        }
+        impl<'ctx> $Trait<&$R<'ctx>> for $L<'ctx> {
+            type Output = Real<'ctx>;
+            fn $method(self, rhs: &$R<'ctx>) -> Real<'ctx> {
+                $builder(&self, rhs)
+            }
+        }
+        impl<'ctx> $Trait<$R<'ctx>> for $L<'ctx> {
+            type Output = Real<'ctx>;
+            fn $method(self, rhs: $R<'ctx>) -> Real<'ctx> {
+                $builder(&self, &rhs)
+            }
+        }
+    };
+}
+
+// Add
+impl_mixed_binop!(Add, add, Int, Real, add_int_real);
+impl_mixed_binop!(Add, add, Real, Int, add_real_int);
+
+// Sub
+impl_mixed_binop!(Sub, sub, Int, Real, sub_int_real);
+impl_mixed_binop!(Sub, sub, Real, Int, sub_real_int);
+
+// Mul
+impl_mixed_binop!(Mul, mul, Int, Real, mul_int_real);
+impl_mixed_binop!(Mul, mul, Real, Int, mul_real_int);
+
+// Div
+impl_mixed_binop!(Div, div, Int, Real, div_int_real);
+impl_mixed_binop!(Div, div, Real, Int, div_real_int);
+
+// Pow
+impl_mixed_binop!(Pow, pow, Int, Real, pow_int_real);
+impl_mixed_binop!(Pow, pow, Real, Int, pow_real_int);
 
 impl<'ctx> Real<'ctx> {
     pub fn new_const<S: Into<Symbol>>(ctx: &'ctx Context, name: S) -> Real<'ctx> {
@@ -1113,6 +1262,16 @@ impl<'ctx> Float<'ctx> {
         unsafe { Self::wrap(ctx, Z3_mk_fpa_round_toward_positive(ctx.z3_ctx)) }
     }
 
+    // returns RoundingMode towards away from zero
+    pub fn round_towards_nearest_away(ctx: &'ctx Context) -> Float<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_nearest_ties_to_away(ctx.z3_ctx)) }
+    }
+
+    // returns RoundingMode towards nearest even
+    pub fn round_towards_nearest_even(ctx: &'ctx Context) -> Float<'ctx> {
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_round_nearest_ties_to_even(ctx.z3_ctx)) }
+    }
+
     // Add two floats of the same size, rounding towards zero
     pub fn add_towards_zero(&self, other: &Self) -> Float<'ctx> {
         Self::round_towards_zero(self.ctx).add(self, other)
@@ -1136,6 +1295,22 @@ impl<'ctx> Float<'ctx> {
     // Convert to IEEE-754 bit-vector
     pub fn to_ieee_bv(&self) -> BV<'ctx> {
         unsafe { BV::wrap(self.ctx, Z3_mk_fpa_to_ieee_bv(self.ctx.z3_ctx, self.z3_ast)) }
+    }
+
+    /// NaN for an arbitrary FP sort.
+    pub fn nan(ctx: &'ctx Context, sort: &Sort<'ctx>) -> Float<'ctx> {
+        debug_assert!(matches!(sort.kind(), SortKind::FloatingPoint));
+        unsafe { Self::wrap(ctx, Z3_mk_fpa_nan(ctx.z3_ctx, sort.z3_sort)) }
+    }
+
+    /// Convenience IEEE-754 single & double.
+    pub fn nan32(ctx: &'ctx Context) -> Float<'ctx> {
+        let s = Sort::float(ctx, 8, 24);
+        Self::nan(ctx, &s)
+    }
+    pub fn nan64(ctx: &'ctx Context) -> Float<'ctx> {
+        let s = Sort::float(ctx, 11, 53);
+        Self::nan(ctx, &s)
     }
 
     unop! {
@@ -1298,6 +1473,16 @@ impl<'ctx> String<'ctx> {
         }
     }
 
+    /// Greater than in lexicographic order (str.>  s1 s2)
+    pub fn str_gt(&self, other: &Self) -> Bool<'ctx> {
+        other.str_lt(self)
+    }
+
+    /// Greater than or equal to in lexicographic order (str.>= s1 s2)
+    pub fn str_ge(&self, other: &Self) -> Bool<'ctx> {
+        other.str_le(self)
+    }
+
     varop! {
         /// Appends the argument strings to `Self`
         concat(Z3_mk_seq_concat, String<'ctx>);
@@ -1315,6 +1500,10 @@ impl<'ctx> String<'ctx> {
         prefix(Z3_mk_seq_prefix, Bool<'ctx>);
         /// Checks whether `Self` is a suffix of the argument
         suffix(Z3_mk_seq_suffix, Bool<'ctx>);
+        /// Checks whether `Self` is less than the argument in lexicographic order (str.<  s1 s2)
+        str_lt(Z3_mk_str_lt, Bool<'ctx>);
+        /// Checks whether `Self` is less than or equal to the argument in lexicographic order (str.<= s1 s2)
+        str_le(Z3_mk_str_le, Bool<'ctx>);
     }
 }
 
@@ -1835,6 +2024,12 @@ impl<'ctx> Seq<'ctx> {
         }
     }
 
+    /// Create an empty sequence of the given sort.
+    pub fn empty(ctx: &'ctx Context, eltype: &Sort<'ctx>) -> Self {
+        let sort = Sort::seq(ctx, eltype);
+        unsafe { Self::wrap(ctx, Z3_mk_seq_empty(ctx.z3_ctx, sort.z3_sort)) }
+    }
+
     /// Create a unit sequence of `a`.
     pub fn unit<A: Ast<'ctx>>(ctx: &'ctx Context, a: &A) -> Self {
         unsafe { Self::wrap(ctx, Z3_mk_seq_unit(ctx.z3_ctx, a.get_z3_ast())) }
@@ -1881,6 +2076,15 @@ impl<'ctx> Seq<'ctx> {
 
     pub fn length(&self) -> Int<'ctx> {
         unsafe { Int::wrap(self.ctx, Z3_mk_seq_length(self.ctx.z3_ctx, self.z3_ast)) }
+    }
+
+    pub fn contains(&self, containee: &Self) -> Bool<'ctx> {
+        unsafe {
+            Bool::wrap(
+                self.ctx,
+                Z3_mk_seq_contains(self.ctx.z3_ctx, self.z3_ast, containee.z3_ast),
+            )
+        }
     }
 
     varop! {
